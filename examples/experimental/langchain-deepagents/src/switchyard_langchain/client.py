@@ -11,11 +11,7 @@ from typing import Any, cast
 from langchain.messages import AIMessage
 from langchain_core.language_models import BaseChatModel
 
-from .conversion import (
-    messages_from_request,
-    model_options_from_request,
-    response_from_ai_message,
-)
+from .conversion import response_from_ai_message, target_invocation_from_request
 
 
 class LangChainLlmClient:
@@ -37,8 +33,8 @@ class LangChainLlmClient:
         request: Mapping[str, object],
     ) -> Mapping[str, object]:
         """Invoke the target with a buffered neutral request and return a neutral response."""
-        messages = messages_from_request(request)
-        tools, tool_choice, options = model_options_from_request(request)
+        invocation = target_invocation_from_request(request)
+        options = dict(invocation.options)
         stop_value = options.pop("stop", None)
         if stop_value is not None:
             if not isinstance(stop_value, list) or not all(
@@ -50,9 +46,12 @@ class LangChainLlmClient:
             stop = None
 
         model: Any = self.model
-        if tools:
-            model = self.model.bind_tools(tools, tool_choice=cast(Any, tool_choice))
-        response = await model.ainvoke(messages, stop=stop, **options)
+        if invocation.tools:
+            model = self.model.bind_tools(
+                list(invocation.tools),
+                tool_choice=cast(Any, invocation.tool_choice),
+            )
+        response = await model.ainvoke(list(invocation.messages), stop=stop, **options)
         if not isinstance(response, AIMessage):
             raise ValueError(
                 f"target returned {type(response).__name__} instead of AIMessage"
