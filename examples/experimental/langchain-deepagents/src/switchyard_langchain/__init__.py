@@ -6,4 +6,7 @@
 from .client import LangChainLlmClient as LangChainLlmClient
 from .middleware import SwitchyardRoutingMiddleware as SwitchyardRoutingMiddleware
 
-__all__ = ["LangChainLlmClient", "SwitchyardRoutingMiddleware"]
+__all__ = [
+    "LangChainLlmClient",
+    "SwitchyardRoutingMiddleware",
+]

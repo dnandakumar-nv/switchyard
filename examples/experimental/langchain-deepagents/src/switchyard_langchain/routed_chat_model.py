@@ -19,7 +19,8 @@ from langchain_core.tools import BaseTool
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from pydantic import Field
 
-from .conversion import ai_message_from_response, request_from_langchain
+from .request_mapper import SwitchyardRequestMapper
+from .response_mapper import SwitchyardResponseMapper
 
 
 class _SwitchyardChatModel(BaseChatModel):
@@ -38,7 +39,7 @@ class _SwitchyardChatModel(BaseChatModel):
         tool_choice: Any = None,
         **kwargs: Any,
     ) -> Runnable[Any, AIMessage]:
-        """Bind Deep Agent tools to the neutral request produced at generation time."""
+        """Bind Deep Agent tools to the Switchyard request produced at generation time."""
         converted = [convert_to_openai_tool(tool) for tool in tools]
         return self.bind(tools=converted, tool_choice=tool_choice, **kwargs)
 
@@ -55,7 +56,7 @@ class _SwitchyardChatModel(BaseChatModel):
         ):
             raise ValueError("tools must be a sequence")
         tool_choice = kwargs.pop("tool_choice", None)
-        request = request_from_langchain(
+        request = SwitchyardRequestMapper.to_switchyard(
             messages,
             tools=cast(Sequence[object], tools_value),
             tool_choice=tool_choice,
@@ -63,7 +64,10 @@ class _SwitchyardChatModel(BaseChatModel):
             stop=stop,
         )
         decisions, response = await self.algorithm.run(request)
-        message = ai_message_from_response(response, decisions)
+        message = SwitchyardResponseMapper.from_switchyard(
+            response,
+            decisions=decisions,
+        )
         return ChatResult(generations=[ChatGeneration(message=message)])
 
     def _generate(

@@ -1,16 +1,65 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Internal compatibility facade for LangChain/libsy conversion."""
+"""Compatibility facade for the internal LangChain/Switchyard mappers."""
 
-from ._request_conversion import messages_from_request as messages_from_request
-from ._request_conversion import model_options_from_request as model_options_from_request
-from ._request_conversion import request_from_langchain as request_from_langchain
-from ._request_conversion import (
-    target_invocation_from_request as target_invocation_from_request,
-)
-from ._response_conversion import ai_message_from_response as ai_message_from_response
-from ._response_conversion import response_from_ai_message as response_from_ai_message
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+
+from langchain.messages import AIMessage
+from langchain_core.messages import BaseMessage
+
+from .request_mapper import SwitchyardRequestMapper
+from .response_mapper import SwitchyardResponseMapper
+
+
+def request_from_langchain(
+    messages: Sequence[BaseMessage],
+    *,
+    tools: Sequence[object],
+    tool_choice: object | None,
+    model_settings: Mapping[str, object],
+    stop: list[str] | None,
+) -> dict[str, object]:
+    """Build a buffered Switchyard request from a LangChain model call."""
+    return SwitchyardRequestMapper.to_switchyard(
+        messages,
+        tools=tools,
+        tool_choice=tool_choice,
+        model_settings=model_settings,
+        stop=stop,
+    )
+
+
+def messages_from_request(request: Mapping[str, object]) -> list[BaseMessage]:
+    """Convert a Switchyard request into target LangChain messages."""
+    return SwitchyardRequestMapper.from_switchyard(request).messages
+
+
+def model_options_from_request(
+    request: Mapping[str, object],
+) -> tuple[list[dict[str, object]], object | None, dict[str, object]]:
+    """Extract LangChain tools, tool choice, and options from a Switchyard request."""
+    invocation = SwitchyardRequestMapper.from_switchyard(request)
+    options = dict(invocation.options)
+    if invocation.stop is not None:
+        options["stop"] = invocation.stop
+    return invocation.tools, invocation.tool_choice, options
+
+
+def response_from_ai_message(message: AIMessage, *, model_name: str) -> dict[str, object]:
+    """Convert a target LangChain response into a Switchyard response."""
+    return SwitchyardResponseMapper.to_switchyard(message, model_name=model_name)
+
+
+def ai_message_from_response(
+    response: Mapping[str, object],
+    decisions: Sequence[Mapping[str, object]],
+) -> AIMessage:
+    """Convert a routed Switchyard response into a LangChain response."""
+    return SwitchyardResponseMapper.from_switchyard(response, decisions=decisions)
+
 
 __all__ = [
     "ai_message_from_response",
@@ -18,5 +67,4 @@ __all__ = [
     "model_options_from_request",
     "request_from_langchain",
     "response_from_ai_message",
-    "target_invocation_from_request",
 ]
