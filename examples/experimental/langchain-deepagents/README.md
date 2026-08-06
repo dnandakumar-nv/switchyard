@@ -14,14 +14,15 @@ The package is intentionally small:
 - Algorithm construction remains in `nemo-switchyard`; this package does not copy or reinterpret
   Switchyard configuration.
 
-The included paid example uses OpenRouter and Stage routing. A simple turn goes to an efficient
-model, while a turn containing a critical failed-tool result goes to a capable model.
+The included paid example uses OpenRouter and Stage routing. A simple provider-native structured
+output turn goes to an efficient model, while a turn containing a critical failed-tool result goes
+to a capable model.
 
 > [!WARNING]
 > This integration is experimental. Its APIs and behavior are subject to breaking changes without
 > notice. The package lives under `examples/experimental`, is not a separate PyPI release, and
-> currently supports buffered text and tool-calling workflows. See [Limitations](#limitations)
-> before using it in an application.
+> currently supports buffered text, tool calling, and structured output. See
+> [Limitations](#limitations) before using it in an application.
 
 ## The mental model
 
@@ -139,7 +140,9 @@ uv run \
 
 The script makes two buffered Deep Agent model calls:
 
-1. A simple request has no tool-failure signal and Stage routing selects `efficient`.
+1. A simple request asks for provider-native structured output. It has no tool-failure signal, so
+   Stage routing selects `efficient`, forwards the JSON schema, and returns a validated Pydantic
+   result.
 2. A synthetic prior `read_file` call returns a critical out-of-memory error, so Stage routing
    selects `capable`.
 
@@ -147,7 +150,7 @@ Expected output has this shape:
 
 ```text
 simple: selected=efficient
-<non-empty response from the efficient model>
+{"message": "<short generated confirmation>", "status": "ok"}
 failed-tool: selected=capable
 <non-empty response from the capable model>
 ```
@@ -198,6 +201,73 @@ result = await agent.ainvoke({
 `LangChainLlmClient` calls the target's asynchronous `ainvoke` method. It does not own the target
 model or its HTTP transport, so normal LangChain construction, callbacks, rate limiters, and model
 configuration continue to apply.
+
+## Structured output
+
+Structured output is returned through the normal Deep Agent state key:
+
+```python
+structured = result["structured_response"]
+```
+
+The integration supports both LangChain strategies. Choose based on the capabilities shared by
+all targets that your router may select.
+
+### Portable tool strategy
+
+Pass a Pydantic model, dataclass, TypedDict, or JSON Schema directly to `response_format`:
+
+```python
+from pydantic import BaseModel
+
+
+class ContactInfo(BaseModel):
+    name: str
+    email: str
+
+
+agent = create_deep_agent(
+    model=efficient_model,
+    middleware=[SwitchyardRoutingMiddleware(router)],
+    response_format=ContactInfo,
+)
+
+result = await agent.ainvoke({
+    "messages": [{"role": "user", "content": "Return Ada Lovelace's contact details."}]
+})
+contact: ContactInfo = result["structured_response"]
+```
+
+For a raw schema, LangChain selects its portable `ToolStrategy`. The response schema becomes a
+tool definition, Switchyard preserves it while routing, and LangChain validates the selected
+target's tool call. This is the safest default for a router whose targets have different
+provider-native capabilities.
+
+### Provider-native strategy
+
+Opt in explicitly when every possible routed target accepts OpenAI-compatible provider-native
+structured output:
+
+```python
+from langchain.agents.structured_output import ProviderStrategy
+
+agent = create_deep_agent(
+    model=efficient_model,
+    middleware=[SwitchyardRoutingMiddleware(router)],
+    response_format=ProviderStrategy(ContactInfo),
+)
+
+result = await agent.ainvoke({
+    "messages": [{"role": "user", "content": "Return Ada Lovelace's contact details."}]
+})
+contact: ContactInfo = result["structured_response"]
+```
+
+The middleware copies LangChain's `response_format` JSON schema into libsy's neutral request. The
+selected `LangChainLlmClient` forwards it to its target model, and LangChain parses and validates
+the returned JSON. The routed model deliberately does not advertise provider-native capability,
+because an opaque algorithm may select heterogeneous targets. Consequently, raw schemas use the
+portable tool strategy and provider-native output always requires explicit `ProviderStrategy`.
 
 ## Use a different routing algorithm
 
@@ -374,8 +444,9 @@ The current adapter supports:
 - human text messages;
 - assistant text and tool calls;
 - text tool results with success/error status;
-- tool definitions and `auto`, `required`, `none`, or named tool choice;
+- tool definitions and `auto`, `any`/`required`, `none`, or named tool choice;
 - temperature, top-p, maximum output tokens, stop sequences, and reasoning effort;
+- portable tool-based and explicit provider-native structured output;
 - libsy classifier response schemas sent to judge targets;
 - response text, tool calls, IDs, normalized finish reasons, and common token usage;
 - complete Switchyard decision traces.
@@ -387,9 +458,6 @@ Unsupported content is rejected with a path-specific `ValueError` before a targe
 - Buffered responses only; no token streaming through libsy's current Python API.
 - Text and tool workflows only. Images, audio, video, files, refusals, and provider-unknown blocks
   are rejected rather than silently dropped.
-- Provider-native structured output requested by the outer Deep Agent is not advertised by the
-  internal routed model in this version. Internal response schemas created by libsy classifiers
-  are preserved and sent to their judge targets.
 - Provider-specific response metadata without a neutral Switchyard equivalent is not retained.
 - The middleware does not add retries or fallback. Target failures propagate through libsy as
   `switchyard.libsy.LibsyError`; use an algorithm or model configuration that implements the

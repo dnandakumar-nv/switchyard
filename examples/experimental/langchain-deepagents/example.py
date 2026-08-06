@@ -7,21 +7,31 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from deepagents import create_deep_agent
 from dotenv import load_dotenv
+from langchain.agents.structured_output import ProviderStrategy
 from langchain.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_openrouter import ChatOpenRouter
+from pydantic import BaseModel, Field
 from switchyard_langchain import LangChainLlmClient, SwitchyardRoutingMiddleware
 
 from switchyard.libsy import LlmTarget, algorithms
 
 EFFICIENT_MODEL_DEFAULT = "openai/gpt-5-mini"
 CAPABLE_MODEL_DEFAULT = "anthropic/claude-sonnet-4.6"
+
+
+class RoutingCheck(BaseModel):
+    """Validated provider-native result returned by the structured routing check."""
+
+    status: Literal["ok"] = Field(description="Whether the routing check succeeded.")
+    message: str = Field(description="A short confirmation of the routing check.")
 
 
 @dataclass(frozen=True)
@@ -31,6 +41,7 @@ class DemoResult:
     case: str
     selected_model: str
     text: str
+    structured_response: RoutingCheck | None = None
 
 
 def repository_env_path() -> Path:
@@ -58,12 +69,17 @@ def _create_models() -> tuple[ChatOpenRouter, ChatOpenRouter]:
     )
     capable_name = os.environ.get("OPENROUTER_CAPABLE_MODEL", CAPABLE_MODEL_DEFAULT)
     return (
-        ChatOpenRouter(model=efficient_name, max_tokens=96),
-        ChatOpenRouter(model=capable_name, max_tokens=96),
+        ChatOpenRouter(model=efficient_name, max_tokens=256),
+        ChatOpenRouter(model=capable_name, max_tokens=256),
     )
 
 
-def _agent(efficient_model: ChatOpenRouter, capable_model: ChatOpenRouter) -> Any:
+def _agent(
+    efficient_model: ChatOpenRouter,
+    capable_model: ChatOpenRouter,
+    *,
+    response_format: ProviderStrategy[RoutingCheck] | None = None,
+) -> Any:
     router = algorithms.stage_router(
         LlmTarget("capable", LangChainLlmClient(capable_model)),
         LlmTarget("efficient", LangChainLlmClient(efficient_model)),
@@ -74,6 +90,7 @@ def _agent(efficient_model: ChatOpenRouter, capable_model: ChatOpenRouter) -> An
     return create_deep_agent(
         model=efficient_model,
         middleware=[SwitchyardRoutingMiddleware(router)],
+        response_format=response_format,
     )
 
 
@@ -97,7 +114,15 @@ def _demo_result(case: str, result: dict[str, object]) -> DemoResult:
         raise ValueError("Deep Agent response has no selected Switchyard model")
     if not message.text.strip():
         raise ValueError("Deep Agent response has no text")
-    return DemoResult(case=case, selected_model=selected, text=message.text)
+    structured = result.get("structured_response")
+    if structured is not None and not isinstance(structured, RoutingCheck):
+        raise ValueError("Deep Agent returned an unexpected structured response")
+    return DemoResult(
+        case=case,
+        selected_model=selected,
+        text=message.text,
+        structured_response=structured,
+    )
 
 
 async def run_demo() -> list[DemoResult]:
@@ -105,13 +130,18 @@ async def run_demo() -> list[DemoResult]:
     load_repository_environment()
     _require_paid_environment()
     efficient_model, capable_model = _create_models()
+    structured_agent = _agent(
+        efficient_model,
+        capable_model,
+        response_format=ProviderStrategy(RoutingCheck),
+    )
     agent = _agent(efficient_model, capable_model)
 
-    simple = await agent.ainvoke({
+    simple = await structured_agent.ainvoke({
         "messages": [
             HumanMessage(
-                "Reply with one short sentence confirming the simple routing check. "
-                "Do not call any tools."
+                "Return status 'ok' and one short message confirming the simple "
+                "structured routing check. Do not call any tools."
             )
         ]
     })
@@ -151,7 +181,10 @@ async def main() -> None:
     results = await run_demo()
     for result in results:
         print(f"{result.case}: selected={result.selected_model}")
-        print(result.text)
+        if result.structured_response is not None:
+            print(json.dumps(result.structured_response.model_dump(), sort_keys=True))
+        else:
+            print(result.text)
 
 
 if __name__ == "__main__":

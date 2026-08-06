@@ -139,6 +139,8 @@ def _neutral_tool_choice(choice: object) -> dict[str, object] | None:
     if choice is None:
         return None
     if isinstance(choice, str):
+        if choice == "any":
+            return {"type": "required"}
         if choice in {"auto", "required", "none"}:
             return {"type": choice}
         return {"type": "tool", "data": {"name": choice}}
@@ -180,6 +182,7 @@ def request_from_langchain(
         "max_completion_tokens",
         "reasoning",
         "reasoning_effort",
+        "response_format",
     }
     if unsupported:
         field = sorted(unsupported)[0]
@@ -192,6 +195,11 @@ def request_from_langchain(
     }
     max_tokens = model_settings.get("max_completion_tokens", model_settings.get("max_tokens"))
     output = {"max_output_tokens": max_tokens} if max_tokens is not None else {}
+    response_format = model_settings.get("response_format")
+    if response_format is not None:
+        output["response_format"] = dict(
+            _mapping(response_format, "model_settings.response_format")
+        )
     reasoning_value = model_settings.get("reasoning")
     if reasoning_value is not None:
         reasoning_mapping = _mapping(reasoning_value, "model_settings.reasoning")

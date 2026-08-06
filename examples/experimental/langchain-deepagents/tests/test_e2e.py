@@ -10,6 +10,7 @@ import os
 import example
 import pytest
 from conftest import REPOSITORY_ROOT
+from langchain.messages import AIMessage
 
 
 def test_repository_env_path_targets_the_checkout_root() -> None:
@@ -48,6 +49,29 @@ async def test_demo_requires_key_before_model_construction(
         await example.run_demo()
 
 
+def test_demo_result_preserves_validated_structured_response() -> None:
+    structured = example.RoutingCheck(
+        status="ok",
+        message="Structured routing confirmed.",
+    )
+    result = {
+        "messages": [
+            AIMessage(
+                '{"status":"ok","message":"Structured routing confirmed."}',
+                response_metadata={
+                    "switchyard": {"selected_model": "efficient"}
+                },
+            )
+        ],
+        "structured_response": structured,
+    }
+
+    demo = example._demo_result("structured", result)
+
+    assert demo.structured_response == structured
+    assert demo.selected_model == "efficient"
+
+
 @pytest.mark.e2e
 async def test_paid_deep_agent_routes_both_openrouter_models() -> None:
     example.load_repository_environment()
@@ -61,3 +85,6 @@ async def test_paid_deep_agent_routes_both_openrouter_models() -> None:
     assert [result.case for result in results] == ["simple", "failed-tool"]
     assert [result.selected_model for result in results] == ["efficient", "capable"]
     assert all(result.text.strip() for result in results)
+    assert results[0].structured_response is not None
+    assert results[0].structured_response.status == "ok"
+    assert results[1].structured_response is None

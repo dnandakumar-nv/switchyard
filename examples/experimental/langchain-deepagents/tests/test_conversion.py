@@ -135,6 +135,7 @@ def test_request_preserves_instructions_tool_history_and_model_options() -> None
     [
         ("auto", {"type": "auto"}),
         ("required", {"type": "required"}),
+        ("any", {"type": "required"}),
         ("none", {"type": "none"}),
         ("run_check", {"type": "tool", "data": {"name": "run_check"}}),
     ],
@@ -162,13 +163,42 @@ def test_request_rejects_multimodal_content() -> None:
         )
 
 
-def test_request_rejects_settings_without_neutral_contract() -> None:
-    with pytest.raises(ValueError, match="response_format is not supported"):
+def test_request_preserves_provider_response_format() -> None:
+    response_format = {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "contact_info",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {"name": {"type": "string"}},
+                "required": ["name"],
+                "additionalProperties": False,
+            },
+        },
+    }
+
+    result = request_from_langchain(
+        [HumanMessage("Return a contact.")],
+        tools=[],
+        tool_choice=None,
+        model_settings={"response_format": response_format},
+        stop=None,
+    )
+
+    assert result["output"] == {"response_format": response_format}
+
+
+def test_request_rejects_non_mapping_response_format() -> None:
+    with pytest.raises(
+        ValueError,
+        match="model_settings.response_format must be a mapping",
+    ):
         request_from_langchain(
             [HumanMessage("hello")],
             tools=[],
             tool_choice=None,
-            model_settings={"response_format": {"type": "json_object"}},
+            model_settings={"response_format": "json"},
             stop=None,
         )
 

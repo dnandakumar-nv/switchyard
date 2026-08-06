@@ -10,6 +10,7 @@ from typing import Any, cast
 
 from deepagents import create_deep_agent
 from langchain.agents.middleware import ModelRequest, ModelResponse
+from langchain.agents.structured_output import ProviderStrategy
 from langchain.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.callbacks import AsyncCallbackManagerForLLMRun, CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel
@@ -17,7 +18,7 @@ from langchain_core.messages import BaseMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
-from pydantic import Field
+from pydantic import BaseModel, Field
 from switchyard_langchain import LangChainLlmClient, SwitchyardRoutingMiddleware
 
 from switchyard.libsy import LlmTarget, TaskClassifierConfig, algorithms
@@ -28,6 +29,8 @@ class StaticChatModel(BaseChatModel):
 
     model_name: str
     response_text: str
+    response_tool_name: str | None = None
+    response_tool_args: dict[str, object] = Field(default_factory=dict)
     calls: list[dict[str, object]] = Field(default_factory=list)
 
     @property
@@ -45,11 +48,20 @@ class StaticChatModel(BaseChatModel):
 
     def _result(self, messages: list[BaseMessage], stop: list[str] | None, **kwargs: Any) -> ChatResult:
         self.calls.append({"messages": messages, "stop": stop, **kwargs})
+        tool_calls = []
+        if self.response_tool_name is not None:
+            tool_calls.append({
+                "id": "call-structured-output",
+                "name": self.response_tool_name,
+                "args": self.response_tool_args,
+                "type": "tool_call",
+            })
         return ChatResult(
             generations=[
                 ChatGeneration(
                     message=AIMessage(
                         self.response_text,
+                        tool_calls=tool_calls,
                         response_metadata={"finish_reason": "stop"},
                     )
                 )
@@ -73,6 +85,13 @@ class StaticChatModel(BaseChatModel):
         **kwargs: Any,
     ) -> ChatResult:
         return self._result(messages, stop, **kwargs)
+
+
+class ContactInfo(BaseModel):
+    """Structured response used to verify both LangChain strategies."""
+
+    name: str
+    email: str
 
 
 async def _run_algorithm(
@@ -204,4 +223,83 @@ async def test_real_deep_agent_binds_its_tools_to_the_selected_target() -> None:
         "read_file",
         "write_file",
         "task",
+    }
+
+
+async def test_real_deep_agent_raw_schema_uses_portable_tool_strategy() -> None:
+    target = StaticChatModel(
+        model_name="efficient-provider",
+        response_text="",
+        response_tool_name="ContactInfo",
+        response_tool_args={
+            "name": "Ada Lovelace",
+            "email": "ada@example.com",
+        },
+    )
+    algorithm = algorithms.random(
+        [LlmTarget("efficient", LangChainLlmClient(target))],
+        seed=11,
+    )
+    agent = create_deep_agent(
+        model=StaticChatModel(model_name="unused", response_text="unused"),
+        middleware=[SwitchyardRoutingMiddleware(algorithm)],
+        response_format=ContactInfo,
+    )
+
+    result = await agent.ainvoke({
+        "messages": [{"role": "user", "content": "Return Ada's contact details."}]
+    })
+
+    assert result["structured_response"] == ContactInfo(
+        name="Ada Lovelace",
+        email="ada@example.com",
+    )
+    final = next(
+        message for message in reversed(result["messages"]) if isinstance(message, AIMessage)
+    )
+    assert final.response_metadata["switchyard"]["selected_model"] == "efficient"
+    assert target.calls[0]["tool_choice"] == "required"
+    assert "response_format" not in target.calls[0]
+
+
+async def test_real_deep_agent_explicit_provider_strategy_reaches_target() -> None:
+    target = StaticChatModel(
+        model_name="efficient-provider",
+        response_text='{"name":"Ada Lovelace","email":"ada@example.com"}',
+    )
+    algorithm = algorithms.random(
+        [LlmTarget("efficient", LangChainLlmClient(target))],
+        seed=13,
+    )
+    agent = create_deep_agent(
+        model=StaticChatModel(model_name="unused", response_text="unused"),
+        middleware=[SwitchyardRoutingMiddleware(algorithm)],
+        response_format=ProviderStrategy(ContactInfo),
+    )
+
+    result = await agent.ainvoke({
+        "messages": [{"role": "user", "content": "Return Ada's contact details."}]
+    })
+
+    assert result["structured_response"] == ContactInfo(
+        name="Ada Lovelace",
+        email="ada@example.com",
+    )
+    assert target.calls[0]["response_format"] == {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "ContactInfo",
+            "schema": {
+                "description": (
+                    "Structured response used to verify both LangChain strategies."
+                ),
+                "properties": {
+                    "name": {"title": "Name", "type": "string"},
+                    "email": {"title": "Email", "type": "string"},
+                },
+                "required": ["name", "email"],
+                "title": "ContactInfo",
+                "type": "object",
+            },
+        },
     }
