@@ -1,0 +1,63 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+"""Safety checks and paid OpenRouter E2E for the runnable Deep Agent example."""
+
+from __future__ import annotations
+
+import os
+
+import example
+import pytest
+from conftest import REPOSITORY_ROOT
+
+
+def test_repository_env_path_targets_the_checkout_root() -> None:
+    assert example.repository_env_path() == REPOSITORY_ROOT / ".env"
+
+
+async def test_demo_requires_explicit_spend_opt_in_before_model_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(example, "load_repository_environment", lambda: None)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.delenv("SWITCHYARD_LANGCHAIN_E2E", raising=False)
+
+    def fail_if_models_are_constructed() -> object:
+        pytest.fail("provider models must not be constructed without explicit spend opt-in")
+
+    monkeypatch.setattr(example, "_create_models", fail_if_models_are_constructed)
+
+    with pytest.raises(RuntimeError, match="SWITCHYARD_LANGCHAIN_E2E=1"):
+        await example.run_demo()
+
+
+async def test_demo_requires_key_before_model_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(example, "load_repository_environment", lambda: None)
+    monkeypatch.setenv("SWITCHYARD_LANGCHAIN_E2E", "1")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    def fail_if_models_are_constructed() -> object:
+        pytest.fail("provider models must not be constructed without OPENROUTER_API_KEY")
+
+    monkeypatch.setattr(example, "_create_models", fail_if_models_are_constructed)
+
+    with pytest.raises(RuntimeError, match="OPENROUTER_API_KEY"):
+        await example.run_demo()
+
+
+@pytest.mark.e2e
+async def test_paid_deep_agent_routes_both_openrouter_models() -> None:
+    example.load_repository_environment()
+    if os.environ.get("SWITCHYARD_LANGCHAIN_E2E") != "1":
+        pytest.skip("SWITCHYARD_LANGCHAIN_E2E=1 is required for paid E2E")
+    if not os.environ.get("OPENROUTER_API_KEY"):
+        pytest.skip("OPENROUTER_API_KEY is required for paid E2E")
+
+    results = await example.run_demo()
+
+    assert [result.case for result in results] == ["simple", "failed-tool"]
+    assert [result.selected_model for result in results] == ["efficient", "capable"]
+    assert all(result.text.strip() for result in results)
